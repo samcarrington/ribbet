@@ -277,7 +277,7 @@ class TranscriptionEngine:
 
             # Delegate to a thread pool so we don't block the event loop during
             # the (potentially slow) weight loading and compilation steps.
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._load_sync)
 
             self._loaded = True
@@ -341,11 +341,18 @@ class TranscriptionEngine:
         model = models.Lm(lm_config)
         model.set_dtype(mx.bfloat16)
 
-        # Apply quantization matching the weights filename suffix
-        if moshi_path.endswith(".q4.safetensors") or self.quantization == 4:
-            nn.quantize(model, bits=4, group_size=32)
-        elif moshi_path.endswith(".q8.safetensors") or self.quantization == 8:
-            nn.quantize(model, bits=8, group_size=64)
+        # Apply quantization only when the weights file is NOT already quantized.
+        # Pre-quantized safetensors (*.q4.safetensors / *.q8.safetensors) already
+        # have quantized weights baked in; calling nn.quantize() on top would
+        # double-quantize them and corrupt the model.
+        weights_already_quantized = moshi_path.endswith(".q4.safetensors") or moshi_path.endswith(
+            ".q8.safetensors"
+        )
+        if not weights_already_quantized:
+            if self.quantization == 4:
+                nn.quantize(model, bits=4, group_size=32)
+            elif self.quantization == 8:
+                nn.quantize(model, bits=8, group_size=64)
 
         logger.debug("Loading model weights from %s", moshi_path)
         model.load_weights(moshi_path, strict=True)
@@ -418,7 +425,7 @@ class TranscriptionEngine:
             raise RuntimeError("Inference state is None despite model being loaded.")
 
         # Run synchronous inference in a thread pool to avoid blocking the event loop
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         segments = await loop.run_in_executor(
             None,
             self._inference_state.feed,

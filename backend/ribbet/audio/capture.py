@@ -264,9 +264,10 @@ class SystemAudioCapture:
     async def _start_sck_stream(self) -> None:
         """Internal: wire up SCShareableContent → SCStreamConfiguration → SCStream."""
         import asyncio
+        import CoreMedia
         import ScreenCaptureKit as SCK
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         content_future: asyncio.Future = loop.create_future()
 
         def _content_handler(content, error):
@@ -298,7 +299,7 @@ class SystemAudioCapture:
         config.setWidth_(2)
         config.setHeight_(2)
         config.setMinimumFrameInterval_(
-            SCK.CMTimeMake(1, 1)  # 1 fps — effectively disabled
+            CoreMedia.CMTimeMake(1, 1)  # 1 fps — effectively disabled
         )
 
         # Use the first display as the stream source (audio is system-wide regardless)
@@ -358,7 +359,7 @@ class SystemAudioCapture:
         if self._stream is not None:
             import asyncio
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             stop_future: asyncio.Future = loop.create_future()
 
             def _stop_handler(error):
