@@ -30,14 +30,18 @@ async def create_bookmark(session_id: str, body: BookmarkCreate):
         seg_row = await seg_cursor.fetchone()
         timestamp = seg_row["ts"] if seg_row and seg_row["ts"] is not None else 0.0
 
-        # Build snippet from nearby transcript segments
+        # Build snippet from nearby transcript segments.
+        # Use a time-overlap condition so long segments that START before the
+        # window but END inside it (or span the whole window) are included:
+        #   segment overlaps [window_start, window_end) when
+        #     start_time < window_end  AND  end_time > window_start
         window_start = max(0, timestamp - settings.bookmark_snippet_seconds / 2)
         window_end = timestamp + settings.bookmark_snippet_seconds / 2
         snippet_cursor = await db.execute(
             """SELECT text FROM transcript_segments
-               WHERE session_id = ? AND start_time >= ? AND start_time < ?
+               WHERE session_id = ? AND start_time < ? AND end_time > ?
                ORDER BY start_time""",
-            (session_id, window_start, window_end),
+            (session_id, window_end, window_start),
         )
         snippet_rows = await snippet_cursor.fetchall()
         snippet = " ".join(r["text"] for r in snippet_rows) if snippet_rows else ""
