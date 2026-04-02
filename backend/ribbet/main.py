@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from ribbet.config import settings
 from ribbet.db import init_db
 from ribbet.routers import sessions
+from ribbet.ws import session_stream
 
 
 @asynccontextmanager
@@ -26,6 +27,7 @@ app.add_middleware(
 )
 
 app.include_router(sessions.router)
+app.include_router(session_stream.router)
 
 
 @app.get("/health")
