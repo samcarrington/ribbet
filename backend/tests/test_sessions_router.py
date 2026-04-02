@@ -1,6 +1,7 @@
 """Tests for session REST endpoints."""
 
 import pytest
+from unittest.mock import AsyncMock, patch
 
 
 @pytest.mark.asyncio
@@ -103,3 +104,32 @@ async def test_get_session_response_shape(client):
     body = resp.json()
     for field in ("id", "started_at", "ended_at", "status", "segment_count"):
         assert field in body, f"Missing field: {field}"
+
+
+@pytest.mark.asyncio
+async def test_create_session_orchestrator_failure_leaves_no_orphan(client):
+    """When orchestrator.start_session raises, the DB row must NOT remain active.
+
+    The row should be updated to status='error' with a non-null ended_at so
+    there is no orphan active session in the database.
+    """
+    from ribbet.session.orchestrator import orchestrator
+
+    with patch.object(
+        orchestrator,
+        "start_session",
+        new=AsyncMock(side_effect=RuntimeError("pipeline boom")),
+    ):
+        resp = await client.post("/sessions")
+
+    # Endpoint must return 500
+    assert resp.status_code == 500
+
+    # The list of sessions should contain the row, but NOT in active status
+    list_resp = await client.get("/sessions")
+    sessions = list_resp.json()["sessions"]
+    assert len(sessions) == 1
+    assert sessions[0]["status"] == "error", (
+        f"Expected status='error', got {sessions[0]['status']!r} — orphan active row!"
+    )
+    assert sessions[0]["ended_at"] is not None, "ended_at must be set on errored session"

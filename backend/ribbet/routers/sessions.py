@@ -25,7 +25,19 @@ async def create_session():
         )
         await db.commit()
     # Wire orchestrator pipeline (audio capture + STT + insights)
-    await orchestrator.start_session(session_id)
+    try:
+        await orchestrator.start_session(session_id)
+    except Exception as exc:
+        # Orchestrator failed — mark the DB row as errored so no orphan
+        # active session remains.
+        ended_at = datetime.now(timezone.utc).isoformat()
+        async with get_db(settings.db_path) as db:
+            await db.execute(
+                "UPDATE sessions SET status = 'error', ended_at = ? WHERE id = ?",
+                (ended_at, session_id),
+            )
+            await db.commit()
+        raise HTTPException(status_code=500, detail=f"Failed to start session: {exc}") from exc
     return {"session_id": session_id}
 
 
