@@ -1,27 +1,6 @@
 """Tests for session REST endpoints."""
 
 import pytest
-from httpx import ASGITransport, AsyncClient
-
-from ribbet.main import app
-
-
-@pytest.fixture(autouse=True)
-async def _setup_test_db(tmp_path, monkeypatch):
-    """Point the app at a temp database for each test."""
-    from ribbet.config import settings
-
-    monkeypatch.setattr(settings, "app_data_dir", tmp_path)
-    from ribbet.db import init_db
-
-    await init_db(settings.db_path)
-
-
-@pytest.fixture
-async def client():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        yield ac
 
 
 @pytest.mark.asyncio
@@ -77,3 +56,50 @@ async def test_get_session_detail(client):
     body = resp.json()
     assert body["id"] == sid
     assert body["segment_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_stop_already_stopped_session_returns_409(client):
+    """Stopping an already-stopped session must not overwrite ended_at and returns 409."""
+    create_resp = await client.post("/sessions")
+    sid = create_resp.json()["session_id"]
+
+    # First stop — should succeed
+    first_stop = await client.post(f"/sessions/{sid}/stop")
+    assert first_stop.status_code == 200
+
+    # Capture ended_at after first stop
+    detail_after_first = await client.get(f"/sessions/{sid}")
+    ended_at_first = detail_after_first.json()["ended_at"]
+    assert ended_at_first is not None
+
+    # Second stop — must return 409, not re-update ended_at
+    second_stop = await client.post(f"/sessions/{sid}/stop")
+    assert second_stop.status_code == 409
+
+    # ended_at must be unchanged
+    detail_after_second = await client.get(f"/sessions/{sid}")
+    assert detail_after_second.json()["ended_at"] == ended_at_first
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_response_shape(client):
+    """Verify list endpoint returns expected response_model fields."""
+    await client.post("/sessions")
+    resp = await client.get("/sessions")
+    assert resp.status_code == 200
+    session = resp.json()["sessions"][0]
+    for field in ("id", "started_at", "ended_at", "status", "segment_count"):
+        assert field in session, f"Missing field: {field}"
+
+
+@pytest.mark.asyncio
+async def test_get_session_response_shape(client):
+    """Verify single session GET returns expected response_model fields."""
+    create_resp = await client.post("/sessions")
+    sid = create_resp.json()["session_id"]
+    resp = await client.get(f"/sessions/{sid}")
+    assert resp.status_code == 200
+    body = resp.json()
+    for field in ("id", "started_at", "ended_at", "status", "segment_count"):
+        assert field in body, f"Missing field: {field}"

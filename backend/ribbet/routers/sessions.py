@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 
 from ribbet.config import settings
 from ribbet.db import get_db
+from ribbet.models import SessionListOut, SessionOut
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -24,7 +25,7 @@ async def create_session():
     return {"session_id": session_id}
 
 
-@router.get("")
+@router.get("", response_model=SessionListOut)
 async def list_sessions():
     async with get_db(settings.db_path) as db:
         cursor = await db.execute(
@@ -46,7 +47,7 @@ async def list_sessions():
     return {"sessions": sessions}
 
 
-@router.get("/{session_id}")
+@router.get("/{session_id}", response_model=SessionOut)
 async def get_session(session_id: str):
     async with get_db(settings.db_path) as db:
         cursor = await db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
@@ -71,9 +72,15 @@ async def get_session(session_id: str):
 async def stop_session(session_id: str):
     now = datetime.now(timezone.utc).isoformat()
     async with get_db(settings.db_path) as db:
-        cursor = await db.execute("SELECT id FROM sessions WHERE id = ?", (session_id,))
-        if not await cursor.fetchone():
+        cursor = await db.execute("SELECT id, status FROM sessions WHERE id = ?", (session_id,))
+        row = await cursor.fetchone()
+        if not row:
             raise HTTPException(status_code=404, detail="Session not found")
+        if row["status"] == "stopped":
+            raise HTTPException(
+                status_code=409,
+                detail="Session is already stopped",
+            )
         await db.execute(
             "UPDATE sessions SET status = 'stopped', ended_at = ? WHERE id = ?",
             (now, session_id),

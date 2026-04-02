@@ -17,6 +17,10 @@ class SessionOut(BaseModel):
     segment_count: int
 
 
+class SessionListOut(BaseModel):
+    sessions: list[SessionOut]
+
+
 class TranscriptSegmentOut(BaseModel):
     id: str
     text: str
