@@ -30,6 +30,10 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "macos: requires macOS 13+ and Screen Recording permission",
+    "slow: requires ML model download (~2GB)",
+]
 
 [tool.ruff]
 target-version = "py312"
