@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 interface Props {
   open: boolean;
@@ -8,6 +8,14 @@ interface Props {
 
 export function BookmarkDialog({ open, onClose, onSubmit }: Props) {
   const [note, setNote] = useState("");
+
+  // Clear stale note whenever the dialog transitions to open so that
+  // re-opening after a previous session never shows leftover text.
+  useEffect(() => {
+    if (open) {
+      setNote("");
+    }
+  }, [open]);
 
   if (!open) return null;
 
