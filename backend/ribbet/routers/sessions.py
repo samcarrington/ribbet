@@ -1,5 +1,6 @@
 """Session CRUD REST endpoints."""
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -163,7 +164,7 @@ async def regenerate_insights(session_id: str):
             (
                 str(uuid.uuid4()),
                 session_id,
-                __import__("json").dumps(snapshot),
+                json.dumps(snapshot),
                 snapshot["last_updated"],
             ),
         )

@@ -273,12 +273,6 @@ class SessionOrchestrator:
         try:
             from ribbet.audio.capture import AudioCaptureConfig, SystemAudioCapture
 
-            config = AudioCaptureConfig(
-                sample_rate=settings.stt_quantization,  # reuse sample_rate default (24 kHz)
-                channels=1,
-            )
-            # AudioCaptureConfig.sample_rate defaults to 24000 — quantization field ≠ sample_rate
-            # Recreate with proper defaults:
             config = AudioCaptureConfig()
             self._capture = SystemAudioCapture(config)
             available, msg = await self._capture.check_availability()

@@ -143,3 +143,61 @@ Grant **Screen Recording** permission in System Settings → Privacy & Security 
 ## License
 
 MIT
+
+---
+
+## Manual Validation Checklist — Task 12 (Local Transcription)
+
+Run this checklist before shipping to confirm all nine Task 12 scenarios work end-to-end.
+Prerequisites: backend running (`uvicorn ribbet.main:app`), frontend running (`npm run dev`).
+
+### 1. Audio Setup
+- [ ] macOS Screen Recording permission is **granted** for the terminal / app process
+- [ ] `GET /health` returns `200 OK`
+- [ ] Backend log shows `"Audio source available"` on `POST /sessions`
+- [ ] WebSocket `status` event delivers `source: "capturing"`
+
+### 2. Model Loading
+- [ ] `POST /sessions` triggers STT warm-up; log shows `"STT model ready"`
+- [ ] WebSocket delivers `model: "warming"` followed by `model: "ready"`
+- [ ] If ML deps absent: log shows `"STT model failed to load"` but session still reaches `status: "active"` (degraded mode)
+
+### 3. Live Session
+- [ ] While a session is active, speak or play audio into the system source
+- [ ] WebSocket delivers `type: "transcript"` segments within ~1 s
+- [ ] `GET /sessions/{id}/transcript` returns accumulating segments during the session
+
+### 4. Insight Extraction
+- [ ] After ≥ 30 s of speech, WebSocket delivers `type: "insights"` with `stale: false`
+- [ ] Insight snapshot contains at least one of `topics`, `actions`, or `decisions`
+- [ ] `last_updated` timestamp advances on each refresh cycle
+
+### 5. Bookmarks
+- [ ] `POST /sessions/{id}/bookmarks` with `{"note": "test"}` returns `201` with `id`, `timestamp`, `snippet`
+- [ ] `GET /sessions/{id}/bookmarks` lists the created bookmark
+- [ ] `snippet` contains transcript text from ±30 s window around bookmark timestamp
+
+### 6. Stop + Persist
+- [ ] `POST /sessions/{id}/stop` returns `{"status": "stopped"}`
+- [ ] WebSocket delivers `session: "stopped"`
+- [ ] Backend log shows `"Persisted session … N segments, M bookmarks"`
+- [ ] `GET /sessions/{id}/transcript` returns all segments that were broadcast live
+
+### 7. Session Review
+- [ ] `GET /sessions` lists the stopped session with correct `segment_count`
+- [ ] `GET /sessions/{id}` returns `status: "stopped"` with `ended_at` set
+- [ ] `POST /sessions/{id}/regenerate-insights` returns a fresh snapshot (not stale)
+- [ ] Regenerated snapshot is persisted: re-calling the endpoint returns updated `last_updated`
+
+### 8. Source Unavailable
+- [ ] **Revoke** Screen Recording permission (or run without it)
+- [ ] `POST /sessions` still succeeds and reaches `status: "active"`
+- [ ] WebSocket delivers `type: "error"` with Screen Recording guidance message
+- [ ] `source_status` is `"unavailable"`; no pipeline tasks are started
+- [ ] Session can still be stopped cleanly via `POST /sessions/{id}/stop`
+
+### 9. Insight Lag (stale snapshot)
+- [ ] With a running session, temporarily disable the Qwen model (set `INSIGHT_MODEL_REPO` to an invalid path)
+- [ ] After the next insight cycle, WebSocket delivers `type: "insights"` with `stale: true`
+- [ ] Previous insight content is preserved in the stale broadcast (not cleared)
+- [ ] Restore the model; subsequent cycle delivers `stale: false` snapshot
