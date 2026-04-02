@@ -6,8 +6,8 @@ The SystemAudioCapture class wraps ScreenCaptureKit and requires macOS + permiss
 
 from __future__ import annotations
 
-import asyncio
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -24,27 +24,44 @@ class AudioCaptureConfig:
 
 
 class AudioBuffer:
-    """Thread-safe rolling audio buffer."""
+    """Thread-safe rolling audio buffer.
+
+    All public methods acquire an internal lock so they are safe to call
+    from multiple threads (e.g. an audio-capture callback thread and the
+    main/async thread that reads audio for transcription).
+    """
 
     def __init__(self, sample_rate: int, max_seconds: float):
         self.sample_rate = sample_rate
         self._max_samples = int(max_seconds * sample_rate)
         self._data = np.array([], dtype=np.float32)
+        self._lock = threading.Lock()
 
     def append(self, chunk: np.ndarray) -> None:
-        self._data = np.concatenate([self._data, chunk.astype(np.float32)])
-        if len(self._data) > self._max_samples:
-            self._data = self._data[-self._max_samples :]
+        """Append *chunk* to the buffer, evicting the oldest samples if needed."""
+        with self._lock:
+            self._data = np.concatenate([self._data, chunk.astype(np.float32)])
+            if len(self._data) > self._max_samples:
+                self._data = self._data[-self._max_samples :]
 
     def read_last(self, seconds: float) -> np.ndarray:
+        """Return up to *seconds* worth of the most recent audio samples.
+
+        If fewer samples are available than requested, all available samples
+        are returned (i.e. the result may be shorter than ``seconds``).
+        The returned array is a copy; subsequent ``append`` calls will not
+        affect it.
+        """
         n = int(seconds * self.sample_rate)
-        if len(self._data) == 0:
-            return np.array([], dtype=np.float32)
-        return self._data[-n:]
+        with self._lock:
+            if len(self._data) == 0:
+                return np.array([], dtype=np.float32)
+            return self._data[-n:].copy()
 
     @property
     def duration_seconds(self) -> float:
-        return len(self._data) / self.sample_rate
+        with self._lock:
+            return len(self._data) / self.sample_rate
 
 
 class SystemAudioCapture:
