@@ -18,6 +18,10 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+class _StubNotImplemented(NotImplementedError):
+    """Raised by transcribe_chunk stub to signal real inference is not yet wired."""
+
+
 @dataclass
 class TranscriptSegment:
     text: str
@@ -49,14 +53,20 @@ class TranscriptionResult:
         )
 
     def recent_text(self, last_seconds: float) -> str:
-        """Get text from the last N seconds of transcript."""
+        """Get text from the last N seconds of confirmed (non-partial) transcript.
+
+        Uses the latest *confirmed* segment end_time as the reference point so
+        that a trailing partial segment does not shift the cutoff forward and
+        incorrectly exclude recently confirmed text.
+        """
         if not self.segments:
             return ""
-        latest = self.segments[-1].end_time
+        confirmed = [s for s in self.segments if not s.is_partial]
+        if not confirmed:
+            return ""
+        latest = confirmed[-1].end_time
         cutoff = latest - last_seconds
-        return " ".join(
-            s.text for s in self.segments if not s.is_partial and s.start_time >= cutoff
-        )
+        return " ".join(s.text for s in confirmed if s.start_time >= cutoff)
 
 
 class TranscriptionEngine:
@@ -77,6 +87,7 @@ class TranscriptionEngine:
         self._mimi = None
         self._text_tokenizer = None
         self._loaded = False
+        self._lock = asyncio.Lock()
 
     @property
     def is_loaded(self) -> bool:
@@ -84,25 +95,29 @@ class TranscriptionEngine:
 
     async def load(self) -> None:
         """Load the STT model. This is slow (first run downloads weights)."""
-        logger.info("Loading STT model %s (q%d)...", self.model_repo, self.quantization)
+        async with self._lock:
+            if self._loaded:
+                logger.debug("STT model already loaded; skipping.")
+                return
+            logger.info("Loading STT model %s (q%d)...", self.model_repo, self.quantization)
 
-        # Implementation note for the engineer:
-        # Use the moshi_mlx inference API:
-        #
-        # from moshi_mlx.models import loaders
-        # checkpoint_info = loaders.CheckpointInfo.from_hf_repo(self.model_repo)
-        # self._mimi = checkpoint_info.get_mimi(device="mps")  # or default MLX device
-        # self._text_tokenizer = checkpoint_info.get_text_tokenizer()
-        # self._model = checkpoint_info.get_moshi(device="mps")
-        #
-        # The actual streaming inference loop:
-        # 1. Pad audio per stt_config audio_silence_prefix_seconds
-        # 2. Create InferenceState(mimi, text_tokenizer, model, batch_size=1)
-        # 3. Feed chunks via state.run() or the streaming API
-        # 4. Decode output tokens to text with timestamps
+            # Implementation note for the engineer:
+            # Use the moshi_mlx inference API:
+            #
+            # from moshi_mlx.models import loaders
+            # checkpoint_info = loaders.CheckpointInfo.from_hf_repo(self.model_repo)
+            # self._mimi = checkpoint_info.get_mimi(device="mps")  # or default MLX device
+            # self._text_tokenizer = checkpoint_info.get_text_tokenizer()
+            # self._model = checkpoint_info.get_moshi(device="mps")
+            #
+            # The actual streaming inference loop:
+            # 1. Pad audio per stt_config audio_silence_prefix_seconds
+            # 2. Create InferenceState(mimi, text_tokenizer, model, batch_size=1)
+            # 3. Feed chunks via state.run() or the streaming API
+            # 4. Decode output tokens to text with timestamps
 
-        self._loaded = True
-        logger.info("STT model loaded")
+            self._loaded = True
+            logger.info("STT model loaded")
 
     async def transcribe_chunk(
         self, audio: np.ndarray, chunk_start_time: float
@@ -115,6 +130,10 @@ class TranscriptionEngine:
 
         Returns:
             List of new TranscriptSegment objects
+
+        Raises:
+            RuntimeError: if the model has not been loaded via load().
+            NotImplementedError: real moshi_mlx inference is not yet wired.
         """
         if not self._loaded:
             raise RuntimeError("Model not loaded. Call load() first.")
@@ -127,12 +146,15 @@ class TranscriptionEngine:
         # The model has a 0.5s text delay, so timestamps should be
         # adjusted: text_timestamp = audio_frame_offset - 0.5
 
-        return []
+        raise _StubNotImplemented(
+            "transcribe_chunk is a stub — wire up moshi_mlx inference before use."
+        )
 
     async def unload(self) -> None:
         """Release model resources."""
-        self._model = None
-        self._mimi = None
-        self._text_tokenizer = None
-        self._loaded = False
-        logger.info("STT model unloaded")
+        async with self._lock:
+            self._model = None
+            self._mimi = None
+            self._text_tokenizer = None
+            self._loaded = False
+            logger.info("STT model unloaded")
