@@ -1,16 +1,49 @@
 """Tests for audio capture module.
 
-NOTE: Tests that actually capture system audio are marked @pytest.mark.macos
-and require Screen Recording permission. Run with: pytest -m macos
+Tests cover:
+  - AudioBuffer (platform-independent) — always run
+  - SystemAudioCapture.check_availability() — always run
+  - SystemAudioCapture.start() with missing deps — always run (CI-safe)
+  - Real capture tests are marked @pytest.mark.macos and require:
+      • macOS 13+ (Ventura or later)
+      • pyobjc-framework-ScreenCaptureKit installed
+      • Screen Recording permission granted
+      Run with: pytest -m macos
 """
+
+from __future__ import annotations
 
 import threading
 
 import pytest
 import numpy as np
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from ribbet.audio.capture import AudioBuffer, AudioCaptureConfig
+from ribbet.audio.capture import AudioBuffer, AudioCaptureConfig, SystemAudioCapture
+
+# ---------------------------------------------------------------------------
+# Availability detection
+# ---------------------------------------------------------------------------
+
+_SCK_AVAILABLE = False
+try:
+    import ScreenCaptureKit  # noqa: F401
+    import objc  # noqa: F401
+    import CoreMedia  # noqa: F401
+
+    _SCK_AVAILABLE = True
+except ImportError:
+    pass
+
+requires_sck = pytest.mark.skipif(
+    not _SCK_AVAILABLE,
+    reason="pyobjc-framework-ScreenCaptureKit not installed — skipping SCK tests",
+)
+
+
+# ---------------------------------------------------------------------------
+# AudioBuffer — basic operation
+# ---------------------------------------------------------------------------
 
 
 def test_audio_buffer_append_and_read():
@@ -50,7 +83,9 @@ def test_audio_buffer_read_from_empty():
     assert len(chunk) == 0
 
 
-# --- Truncation behaviour -------------------------------------------------
+# ---------------------------------------------------------------------------
+# AudioBuffer — truncation behaviour
+# ---------------------------------------------------------------------------
 
 
 def test_audio_buffer_read_last_truncates_when_less_data_available():
@@ -71,7 +106,9 @@ def test_audio_buffer_read_last_returns_copy():
     assert buf.read_last(1.0).sum() == pytest.approx(4800.0)
 
 
-# --- Thread-safety --------------------------------------------------------
+# ---------------------------------------------------------------------------
+# AudioBuffer — thread-safety
+# ---------------------------------------------------------------------------
 
 
 def test_audio_buffer_thread_safe_concurrent_appends():
@@ -135,3 +172,219 @@ def test_audio_buffer_thread_safe_concurrent_reads_and_writes():
         t.join()
 
     assert not errors, f"Exceptions in threads: {errors}"
+
+
+# ---------------------------------------------------------------------------
+# SystemAudioCapture — availability check (CI-safe)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_check_availability_returns_tuple():
+    """check_availability must return a (bool, str) tuple."""
+    capture = SystemAudioCapture(AudioCaptureConfig())
+    result = await capture.check_availability()
+    assert isinstance(result, tuple)
+    assert len(result) == 2
+    ok, msg = result
+    assert isinstance(ok, bool)
+    assert isinstance(msg, str)
+
+
+@pytest.mark.asyncio
+async def test_check_availability_false_when_deps_missing():
+    """When SCK deps are absent, check_availability returns (False, descriptive msg)."""
+    if _SCK_AVAILABLE:
+        pytest.skip("ScreenCaptureKit installed — skipping dep-missing scenario")
+
+    capture = SystemAudioCapture(AudioCaptureConfig())
+    ok, msg = await capture.check_availability()
+    assert ok is False
+    assert "ScreenCaptureKit" in msg or "pyobjc" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_check_availability_true_when_deps_present():
+    """When SCK deps are present, check_availability returns (True, ...)."""
+    if not _SCK_AVAILABLE:
+        pytest.skip("ScreenCaptureKit not installed")
+
+    capture = SystemAudioCapture(AudioCaptureConfig())
+    ok, msg = await capture.check_availability()
+    assert ok is True
+    assert msg  # non-empty
+
+
+# ---------------------------------------------------------------------------
+# SystemAudioCapture — start() raises when deps missing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_raises_runtime_error_when_deps_missing():
+    """start() must raise RuntimeError with install hint when SCK unavailable."""
+    if _SCK_AVAILABLE:
+        pytest.skip("ScreenCaptureKit installed — skipping")
+
+    capture = SystemAudioCapture(AudioCaptureConfig())
+    with pytest.raises(RuntimeError, match="ScreenCaptureKit|pyobjc"):
+        await capture.start()
+
+    assert capture.is_running is False
+
+
+@pytest.mark.asyncio
+async def test_start_raises_runtime_error_mocked():
+    """start() raises RuntimeError when check_availability returns False (mocked)."""
+    capture = SystemAudioCapture(AudioCaptureConfig())
+
+    async def _fake_check():
+        return False, "ScreenCaptureKit not available. Install pyobjc-framework-ScreenCaptureKit."
+
+    capture.check_availability = _fake_check  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="ScreenCaptureKit"):
+        await capture.start()
+
+    assert capture.is_running is False
+
+
+# ---------------------------------------------------------------------------
+# SystemAudioCapture — start() + stop() with mocked SCK (CI-safe)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_stop_with_mocked_sck():
+    """Verify start/stop state transitions using a mocked _start_sck_stream."""
+    capture = SystemAudioCapture(AudioCaptureConfig(), on_chunk=lambda _: None)
+
+    # Patch _start_sck_stream so no real ObjC calls happen
+    async def _fake_start_sck():
+        capture._running = True
+
+    capture._start_sck_stream = _fake_start_sck  # type: ignore[method-assign]
+
+    # Also patch check_availability to return True
+    async def _fake_check():
+        return True, "mocked"
+
+    capture.check_availability = _fake_check  # type: ignore[method-assign]
+
+    assert capture.is_running is False
+    await capture.start()
+    assert capture.is_running is True
+
+    await capture.stop()
+    assert capture.is_running is False
+
+
+@pytest.mark.asyncio
+async def test_start_twice_is_noop():
+    """Calling start() a second time when already running must not raise."""
+    capture = SystemAudioCapture(AudioCaptureConfig())
+
+    async def _fake_start_sck():
+        capture._running = True
+
+    async def _fake_check():
+        return True, "mocked"
+
+    capture._start_sck_stream = _fake_start_sck  # type: ignore[method-assign]
+    capture.check_availability = _fake_check  # type: ignore[method-assign]
+
+    call_count = {"n": 0}
+    original = capture._start_sck_stream
+
+    async def _counting_start():
+        call_count["n"] += 1
+        await original()
+
+    capture._start_sck_stream = _counting_start  # type: ignore[method-assign]
+
+    await capture.start()
+    await capture.start()  # second call — should be a no-op
+
+    assert call_count["n"] == 1  # _start_sck_stream called only once
+    assert capture.is_running is True
+
+
+@pytest.mark.asyncio
+async def test_stop_when_not_running_is_noop():
+    """stop() on a never-started capture must not raise."""
+    capture = SystemAudioCapture(AudioCaptureConfig())
+    await capture.stop()  # must not raise
+    assert capture.is_running is False
+
+
+@pytest.mark.asyncio
+async def test_on_chunk_callback_invoked():
+    """on_chunk callback must be invoked with float32 array from _start_sck_stream.
+
+    We simulate the callback path by directly calling on_chunk from a fake
+    _start_sck_stream, bypassing the ObjC bridge.
+    """
+    received: list[np.ndarray] = []
+
+    def _on_chunk(chunk: np.ndarray) -> None:
+        received.append(chunk)
+
+    capture = SystemAudioCapture(AudioCaptureConfig(), on_chunk=_on_chunk)
+
+    async def _fake_start_sck():
+        capture._running = True
+        # Simulate audio arriving: call on_chunk directly
+        fake_audio = np.ones(1920, dtype=np.float32)
+        capture.on_chunk(fake_audio)
+
+    async def _fake_check():
+        return True, "mocked"
+
+    capture._start_sck_stream = _fake_start_sck  # type: ignore[method-assign]
+    capture.check_availability = _fake_check  # type: ignore[method-assign]
+
+    await capture.start()
+    await capture.stop()
+
+    assert len(received) == 1
+    assert received[0].dtype == np.float32
+    assert len(received[0]) == 1920
+
+
+# ---------------------------------------------------------------------------
+# SystemAudioCapture — real hardware tests (macOS + permission required)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.macos
+@pytest.mark.asyncio
+@requires_sck
+async def test_real_capture_starts_and_stops():
+    """Live ScreenCaptureKit capture — requires macOS 13+ and Screen Recording perm."""
+    chunks: list[np.ndarray] = []
+
+    def _on_chunk(chunk: np.ndarray) -> None:
+        chunks.append(chunk)
+
+    config = AudioCaptureConfig(sample_rate=24000, channels=1)
+    capture = SystemAudioCapture(config, on_chunk=_on_chunk)
+
+    ok, msg = await capture.check_availability()
+    assert ok, f"SCK not available: {msg}"
+
+    await capture.start()
+    assert capture.is_running
+
+    # Let it run for a short time to collect some audio
+    import asyncio
+
+    await asyncio.sleep(0.5)
+
+    await capture.stop()
+    assert not capture.is_running
+
+    # Some chunks should have arrived (silence or system audio)
+    assert len(chunks) > 0
+    for chunk in chunks:
+        assert chunk.dtype == np.float32
+        assert chunk.ndim == 1
