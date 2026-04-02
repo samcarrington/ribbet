@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from ribbet.config import settings
 from ribbet.db import get_db
 from ribbet.models import SessionListOut, SessionOut
+from ribbet.session.orchestrator import orchestrator
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -22,6 +23,8 @@ async def create_session():
             (session_id, now, "active"),
         )
         await db.commit()
+    # Wire orchestrator pipeline (audio capture + STT + insights)
+    await orchestrator.start_session(session_id)
     return {"session_id": session_id}
 
 
@@ -86,6 +89,8 @@ async def stop_session(session_id: str):
             (now, session_id),
         )
         await db.commit()
+    # Stop pipeline and persist in-memory data (segments, bookmarks, insights)
+    await orchestrator.stop_session(db_path=settings.db_path)
     return {"status": "stopped"}
 
 
@@ -127,14 +132,41 @@ async def regenerate_insights(session_id: str):
         if not await cursor.fetchone():
             raise HTTPException(status_code=404, detail="Session not found")
 
-    # Implementation note for the engineer:
-    # 1. Load full transcript from DB
-    # 2. Run insight extractor on the full text
-    # 3. Save new insight snapshot to insight_snapshots table
-    # 4. Return the new snapshot
-    #
-    # For now, return 501 until the insight extractor is fully wired (Task 12):
-    raise HTTPException(
-        status_code=501,
-        detail="Insight regeneration not yet implemented. Wire InsightExtractor here.",
-    )
+        # Load full confirmed transcript from DB
+        seg_cursor = await db.execute(
+            """SELECT text, start_time, end_time FROM transcript_segments
+               WHERE session_id = ? AND is_partial = 0
+               ORDER BY start_time""",
+            (session_id,),
+        )
+        rows = await seg_cursor.fetchall()
+
+    full_text = " ".join(r["text"] for r in rows if r["text"])
+
+    from ribbet.insights.extractor import InsightExtractor
+
+    extractor = InsightExtractor()
+    await extractor.load()
+    raw = await extractor.extract(full_text)
+
+    snapshot = {
+        **raw,
+        "stale": False,
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Persist new snapshot
+    async with get_db(settings.db_path) as db:
+        await db.execute(
+            """INSERT INTO insight_snapshots (id, session_id, snapshot_json, created_at)
+               VALUES (?, ?, ?, ?)""",
+            (
+                str(uuid.uuid4()),
+                session_id,
+                __import__("json").dumps(snapshot),
+                snapshot["last_updated"],
+            ),
+        )
+        await db.commit()
+
+    return snapshot
