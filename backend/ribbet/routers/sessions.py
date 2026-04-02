@@ -87,3 +87,54 @@ async def stop_session(session_id: str):
         )
         await db.commit()
     return {"status": "stopped"}
+
+
+@router.get("/{session_id}/transcript")
+async def get_transcript(session_id: str):
+    async with get_db(settings.db_path) as db:
+        cursor = await db.execute("SELECT id FROM sessions WHERE id = ?", (session_id,))
+        if not await cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        seg_cursor = await db.execute(
+            """SELECT id, text, start_time, end_time, is_partial
+               FROM transcript_segments
+               WHERE session_id = ?
+               ORDER BY start_time""",
+            (session_id,),
+        )
+        rows = await seg_cursor.fetchall()
+
+    return {
+        "session_id": session_id,
+        "segments": [
+            {
+                "id": r["id"],
+                "text": r["text"],
+                "start_time": r["start_time"],
+                "end_time": r["end_time"],
+                "is_partial": bool(r["is_partial"]),
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.post("/{session_id}/regenerate-insights")
+async def regenerate_insights(session_id: str):
+    async with get_db(settings.db_path) as db:
+        cursor = await db.execute("SELECT id FROM sessions WHERE id = ?", (session_id,))
+        if not await cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Session not found")
+
+    # Implementation note for the engineer:
+    # 1. Load full transcript from DB
+    # 2. Run insight extractor on the full text
+    # 3. Save new insight snapshot to insight_snapshots table
+    # 4. Return the new snapshot
+    #
+    # For now, return 501 until the insight extractor is fully wired (Task 12):
+    raise HTTPException(
+        status_code=501,
+        detail="Insight regeneration not yet implemented. Wire InsightExtractor here.",
+    )
