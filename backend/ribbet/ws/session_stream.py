@@ -59,4 +59,6 @@ async def session_websocket(websocket: WebSocket):
             # Keep the connection alive; client may send keepalive pings
             await websocket.receive_text()
     except WebSocketDisconnect:
+        pass
+    finally:
         orchestrator.unregister_ws(websocket)
