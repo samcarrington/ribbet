@@ -49,17 +49,24 @@ CREATE INDEX IF NOT EXISTS idx_insights_session ON insight_snapshots(session_id,
 """
 
 
+async def _enable_foreign_keys(db) -> None:
+    """Enable FK enforcement for a connection (SQLite disables it by default)."""
+    await db.execute("PRAGMA foreign_keys = ON")
+
+
 async def init_db(db_path: Path) -> None:
     """Create the database and tables if they don't exist."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(str(db_path)) as db:
+        await _enable_foreign_keys(db)
         await db.executescript(SCHEMA)
         await db.commit()
 
 
 @asynccontextmanager
 async def get_db(db_path: Path):
-    """Yield an async database connection."""
+    """Yield an async database connection with FK enforcement enabled."""
     async with aiosqlite.connect(str(db_path)) as db:
         db.row_factory = aiosqlite.Row
+        await _enable_foreign_keys(db)
         yield db
